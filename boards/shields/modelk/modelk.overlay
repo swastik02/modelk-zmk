@@ -277,7 +277,7 @@
 		compatible = "zmk,gpio-595";
 		status = "okay";
 		reg = <0>;
-		spi-max-frequency = <400000>;
+		spi-max-frequency = <200000>;
 		gpio-controller;
 		#gpio-cells = <2>;
 		ngpios = <16>; // Daisy chained so 16
