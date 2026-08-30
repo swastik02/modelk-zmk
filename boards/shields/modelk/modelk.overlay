@@ -211,7 +211,6 @@
 	kscan0: kscan {
 		compatible = "zmk,kscan-gpio-matrix";
 		diode-direction = "col2row";
-		wakeup-source;
 
 		// 8 rows
 		// Yes these pins are all over the place but they are correct
@@ -277,7 +276,7 @@
 		compatible = "zmk,gpio-595";
 		status = "okay";
 		reg = <0>;
-		spi-max-frequency = <200000>;
+		spi-max-frequency = <400000>;
 		gpio-controller;
 		#gpio-cells = <2>;
 		ngpios = <16>; // Daisy chained so 16
