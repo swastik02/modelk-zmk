@@ -10,7 +10,7 @@
         zmk,physical-layout = &ansi101_ph_layout;
     };
 
-    default_layout: default_layout {
+    ansi101_ph_layout: ansi101_ph_layout {
         compatible = "zmk,physical-layout";
         display-name = "ANSI 101";
         transform = <&ansi101_matrix_transform>;
