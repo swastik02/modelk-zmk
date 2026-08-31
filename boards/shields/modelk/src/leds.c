@@ -1,213 +1,161 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/logging/log.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
-#include <zmk/events/hid_indicators_changed.h>
-#include <zmk/events/endpoint_changed.h>
 #include <zmk/hid_indicators.h>
-#include <zmk/keymap.h>
-#include <zmk/physical_layouts.h>
-#include <zmk/ble.h>
-#include <zmk/endpoints.h>
-#include <zmk/events/ble_active_profile_changed.h>
-#include <zmk/endpoints_types.h>
+#include <zmk/events/hid_indicators_changed.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
-// GPIO configuration for Num Lock LED
-// ** Requires LEDs to be named 'numlock_led' **
-static const struct gpio_dt_spec numlock_led = GPIO_DT_SPEC_GET(DT_NODELABEL(numlock_led), gpios);
-static const struct gpio_dt_spec capslock_led = GPIO_DT_SPEC_GET(DT_NODELABEL(capslock_led), gpios);
-static const struct gpio_dt_spec bluetooth_led = GPIO_DT_SPEC_GET(DT_NODELABEL(bluetooth_led), gpios);
+#define LED_GPIO_NODE_ID DT_COMPAT_GET_ANY_STATUS_OKAY(gpio_leds)
 
-// For faster initialization
-static const struct gpio_dt_spec *leds[] = {&numlock_led, &capslock_led, &bluetooth_led};
-static const char *led_names[] = {"NumLock", "CapsLock", "Bluetooth"};
+// PWM configuration for Num Lock, Caps Lock, and Scroll Lock LEDs
+static const struct pwm_dt_spec pwm_led_numlock = PWM_DT_SPEC_GET(DT_ALIAS(pwm_led_numlock));
+static const struct pwm_dt_spec pwm_led_capslock = PWM_DT_SPEC_GET(DT_ALIAS(pwm_led_capslock));
+static const struct pwm_dt_spec pwm_led_scrolllock = PWM_DT_SPEC_GET(DT_ALIAS(pwm_led_scrolllock));
 
+#define PWM_PERIOD_NS  20000000 // 20ms period (50Hz)
+#define IDLE_BRIGHTNESS_PERCENT 25
 
-// Global variables to store the current state
-static bool numlock_active = false;
-static bool capslock_active = false;
-static bool is_idle = false;
-static bool bluetooth_connected = false;
-static bool bluetooth_pairing = false;
+// Global variables to store the current brightness for each LED
+static uint8_t current_brightness_numlock = 0;
+static uint8_t current_brightness_capslock = 0;
+static uint8_t current_brightness_scrolllock = 0;
 
-// Bluetooth LED blinking for pairing mode
-static struct k_timer bluetooth_blink_timer;
-static bool bluetooth_blink_state = false;
+// Work structure for handling asynchronous LED updates
+static struct k_work led_update_work;
+static struct k_timer led_update_timer;
 
-// Helper to set the state of a LED
-static int set_led(bool state, struct gpio_dt_spec led) {
-	int err = gpio_pin_set_dt(&led, state ? 1 : 0);
-	if (err) LOG_ERR("Error setting GPIO pin: %d", err);
-	return err;
+// Directly set PWM brightness for a given LED
+static int direct_pwm_set(const struct pwm_dt_spec *pwm_spec, uint8_t brightness_percent, uint8_t *current_brightness) {
+    if (brightness_percent > 100) {
+        brightness_percent = 100;
+    }
+
+    // Calculate the duty cycle in nanoseconds based on the percentage
+    uint32_t duty_cycle_ns = (brightness_percent * PWM_PERIOD_NS) / 100;
+
+    // Set the PWM with the calculated duty cycle
+    int err = pwm_set_dt(pwm_spec, PWM_PERIOD_NS, duty_cycle_ns);
+    if (err) {
+        LOG_ERR("Error setting PWM: %d", err);
+        return err;
+    }
+
+    // Update the current brightness
+    *current_brightness = brightness_percent;
+
+    LOG_INF("Set PWM brightness to %d%% for device %s", brightness_percent, pwm_spec->dev->name);
+    return 0;
 }
 
-// Function to apply states to LEDs
-static void apply_led_state(void) {
-	// If idle and the LED should be on, turn it off during idle
-	if (is_idle && !bluetooth_pairing) {
-		set_led(false, numlock_led);
-		set_led(false, capslock_led);
-		set_led(false, bluetooth_led);
-		return;
-	}
-	k_timer_stop(&bluetooth_blink_timer);
-
-	if (bluetooth_pairing) {
-		// Blinking is handled by timer, just ensure it's started
-		if (!k_timer_status_get(&bluetooth_blink_timer)) {
-			k_timer_start(&bluetooth_blink_timer, K_MSEC(250), K_MSEC(250));
-		}
-	} else {
-		k_timer_stop(&bluetooth_blink_timer);
-		set_led(bluetooth_connected, bluetooth_led);
-	}
-
-	set_led(numlock_active, numlock_led);
-	set_led(capslock_active, capslock_led);
+// Function to update the LED brightness asynchronously
+static void led_update_work_handler(struct k_work *work) {
+    direct_pwm_set(&pwm_led_numlock, current_brightness_numlock, &current_brightness_numlock);
+    direct_pwm_set(&pwm_led_capslock, current_brightness_capslock, &current_brightness_capslock);
+    direct_pwm_set(&pwm_led_scrolllock, current_brightness_scrolllock, &current_brightness_scrolllock);
 }
 
-// Update HID indicators status
-// Does not apply to LEDs, use apply_led_state() right after
-static void update_hid_indicator_flags(void) {
-	zmk_hid_indicators_t flags = zmk_hid_indicators_get_current_profile();
-
-	// Update Num Lock state
-	numlock_active = (flags & 0x01) ? true : false;
-	capslock_active = (flags & 0x02) ? true : false;
-
-	LOG_INF("NUMLOCK: %s, CAPSLOCK: %s",
-			numlock_active ? "ON" : "OFF",
-			capslock_active ? "ON" : "OFF");
-}
-
-// Update Bluetooth connection status
-static void update_bluetooth_status(void) {
-	struct zmk_endpoint_instance active_endpoint = zmk_endpoints_selected();
-	bool ble_is_selected = (active_endpoint.transport == ZMK_TRANSPORT_BLE);
-	bool ble_is_connected = false;
-
-	// Check if BLE is actually connected (not just selected)
-	if (ble_is_selected) {
-		// Check if the active BLE profile is connected
-		uint8_t active_profile = zmk_ble_active_profile_index();
-		ble_is_connected = zmk_ble_active_profile_is_connected();
-	}
-
-	bluetooth_connected = ble_is_connected;
-
-	// Check if we're in pairing mode:
-	// - BLE is selected but not connected
-	// - OR BLE profile is open (advertising)
-	bluetooth_pairing = zmk_ble_active_profile_is_open();
-
-	if (bluetooth_pairing && !bluetooth_connected) {
-		// Start blinking timer (500ms interval for 2Hz blink rate)
-		k_timer_start(&bluetooth_blink_timer, K_MSEC(500), K_MSEC(500));
-	} else {
-		k_timer_stop(&bluetooth_blink_timer);
-		bluetooth_blink_state = false;
-	}
-
-	LOG_INF("Bluetooth - Selected: %s, Connected: %s, Pairing: %s",
-			ble_is_selected ? "YES" : "NO",
-			ble_is_connected ? "YES" : "NO",
-			bluetooth_pairing ? "YES" : "NO");
-
-	// Also update HID because race condition that doesn't make it update
-	update_hid_indicator_flags();
-}
-
-// Timer callback for Bluetooth LED blinking
-static void bluetooth_blink_timer_handler(struct k_timer *timer_id) {
-	if (bluetooth_pairing) {
-		bluetooth_blink_state = !bluetooth_blink_state;
-		set_led(bluetooth_blink_state, bluetooth_led);
-	}
-}
-
-// Callback when the keyboard enters idle
+// Function called when the keyboard enters idle
 static void on_idle(void) {
-	// printk("Keyboard is idle. Updating Num Lock LED state.\n");
-	is_idle = true;
-	apply_led_state();
+    printk("Keyboard is idle. Dimming LED brightness to %d%%.\n", IDLE_BRIGHTNESS_PERCENT);
+
+    // Adjust brightness for idle state
+    current_brightness_numlock = (current_brightness_numlock * IDLE_BRIGHTNESS_PERCENT) / 100;
+    current_brightness_capslock = (current_brightness_capslock * IDLE_BRIGHTNESS_PERCENT) / 100;
+    current_brightness_scrolllock = (current_brightness_scrolllock * IDLE_BRIGHTNESS_PERCENT) / 100;
+
+    // Schedule the LED update asynchronously
+    k_timer_start(&led_update_timer, K_MSEC(100), K_NO_WAIT); // Delay of 100ms before applying the dimming
 }
 
-// Callback when the keyboard wakes up from idle
+// Function called when the keyboard wakes up from idle
 static void on_wake_up(void) {
-	// printk("Keyboard has woken up from idle. Restoring Num Lock LED state.\n");
-	is_idle = false;
+    printk("Keyboard has woken up from idle. Restoring LED brightness.\n");
 
-	update_bluetooth_status(); // Gets called in update_bluetooth_status
-							   // update_hid_indicator_flags();
-	apply_led_state();
+    // Restore the original brightness of the LEDs based on the lock indicators
+    zmk_hid_indicators_t flags = zmk_hid_indicators_get_current_profile();
+
+    current_brightness_numlock = (flags & 0x01) ? 100 : 0;
+    current_brightness_capslock = (flags & 0x02) ? 100 : 0;
+    current_brightness_scrolllock = (flags & 0x04) ? 100 : 0;
+
+    // Schedule the LED update asynchronously
+    k_timer_start(&led_update_timer, K_MSEC(100), K_NO_WAIT); // Delay of 100ms before restoring the brightness
 }
 
-// Event listeners
+// Timer handler for delayed LED updates
+static void led_update_timer_handler(struct k_timer *timer_id) {
+    k_work_submit(&led_update_work);
+}
+
+// Callback for the activity state listener
 static int on_activity_state_changed(const zmk_event_t *ev) {
-	const struct zmk_activity_state_changed *activity_event = as_zmk_activity_state_changed(ev);
-	if (!activity_event) return -1;
+    const struct zmk_activity_state_changed *activity_event = as_zmk_activity_state_changed(ev);
 
-	if (activity_event->state == ZMK_ACTIVITY_IDLE) {
-		on_idle();
-	} else if (activity_event->state == ZMK_ACTIVITY_ACTIVE) {
-		on_wake_up();
-	}
+    if (!activity_event) {
+        return -1;
+    }
 
-	return ZMK_EV_EVENT_BUBBLE;
+    if (activity_event->state == ZMK_ACTIVITY_IDLE) {
+        on_idle();  // Handle idle state
+    } else if (activity_event->state == ZMK_ACTIVITY_ACTIVE) {
+        on_wake_up();  // Handle wake-up state
+    }
+
+    return 0;
 }
 
+// Listener for idle and wake-up state
+ZMK_LISTENER(my_custom_idle_listener, on_activity_state_changed);
+ZMK_SUBSCRIPTION(my_custom_idle_listener, zmk_activity_state_changed);
 
-static int status_changed_listener_cb(const zmk_event_t *eh) {
-	update_bluetooth_status();
-	// update_hid_indicator_flags(); // Gets called in update_bluetooth_status
-	apply_led_state();
-	return ZMK_EV_EVENT_BUBBLE;
+// Listener to handle changes in lock state (Num, Caps, Scroll Lock)
+static int led_locks_listener_cb(const zmk_event_t *eh) {
+    zmk_hid_indicators_t flags = zmk_hid_indicators_get_current_profile();
+
+    // Define brightness levels for Num Lock, Caps Lock, and Scroll Lock
+    current_brightness_numlock = (flags & 0x01) ? 100 : 0;
+    current_brightness_capslock = (flags & 0x02) ? 100 : 0;
+    current_brightness_scrolllock = (flags & 0x04) ? 100 : 0;
+
+    // Schedule the LED update asynchronously
+    k_timer_start(&led_update_timer, K_MSEC(100), K_NO_WAIT);
+
+    LOG_INF("NUMLOCK is %d", current_brightness_numlock > 0);
+    LOG_INF("CAPSLOCK is %d", current_brightness_capslock > 0);
+    LOG_INF("SCROLLLOCK is %d", current_brightness_scrolllock > 0);
+
+    return 0;
 }
 
-// Future me: See https://github.com/zmkfirmware/zmk/tree/main/app/include/zmk/events for event types
-ZMK_LISTENER(activity_state_changed_listener, on_activity_state_changed);
-ZMK_SUBSCRIPTION(activity_state_changed_listener, zmk_activity_state_changed);
+ZMK_LISTENER(led_indicators_listener, led_locks_listener_cb);
+ZMK_SUBSCRIPTION(led_indicators_listener, zmk_hid_indicators_changed);
 
-ZMK_LISTENER(something_changed_listener, status_changed_listener_cb);
-ZMK_SUBSCRIPTION(something_changed_listener, zmk_ble_active_profile_changed);
-ZMK_SUBSCRIPTION(something_changed_listener, zmk_hid_indicators_changed);
-ZMK_SUBSCRIPTION(something_changed_listener, zmk_endpoint_changed);
-
-// Initialize the LED and work structures on boot
+// Initialize the LEDs and work structures on boot
 static int leds_init(void) {
-	// Check all LEDs are ready and configure them
-	for (int i = 0; i < ARRAY_SIZE(leds); i++) {
-		if (!gpio_is_ready_dt(leds[i])) {
-			LOG_ERR("GPIO device for %s LED not ready", led_names[i]);
-			return -ENODEV;
-		}
+    if (!pwm_is_ready_dt(&pwm_led_numlock)) {
+        LOG_ERR("Error: PWM device %s is not ready\n", pwm_led_numlock.dev->name);
+        return -ENODEV;
+    }
+    
+    if (!pwm_is_ready_dt(&pwm_led_capslock)) {
+        LOG_ERR("Error: PWM device %s is not ready\n", pwm_led_capslock.dev->name);
+        return -ENODEV;
+    }
 
-		int err = gpio_pin_configure_dt(leds[i], GPIO_OUTPUT_INACTIVE);
-		if (err) {
-			LOG_ERR("Error configuring %s LED GPIO: %d", led_names[i], err);
-			return err;
-		}
-	}
+    if (!pwm_is_ready_dt(&pwm_led_scrolllock)) {
+        LOG_ERR("Error: PWM device %s is not ready\n", pwm_led_scrolllock.dev->name);
+        return -ENODEV;
+    }
 
-	// Initialize Bluetooth blink timer
-	k_timer_init(&bluetooth_blink_timer, bluetooth_blink_timer_handler, NULL);
+    // Initialize k_work and k_timer
+    k_work_init(&led_update_work, led_update_work_handler);
+    k_timer_init(&led_update_timer, led_update_timer_handler, NULL);
 
-	// Initialize state and apply
-	is_idle = false;
-	numlock_active = false;
-	capslock_active = false;
-	bluetooth_connected = false;
-	bluetooth_pairing = false;
-	update_bluetooth_status();
-	// update_hid_indicator_flags(); // Gets called in update_bluetooth_status
-	apply_led_state();
-
-	LOG_INF("LEDs initialized successfully");
-	return 0;
+    return 0;
 }
 
 // Register leds_init to run at boot
