@@ -264,19 +264,19 @@
 	};
 };
 
-&spi1 {
+&spi0 {
 	compatible = "nordic,nrf-spim";
 	status = "okay";
 	cs-gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
-	pinctrl-0 = <&spi1_default>;
-	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-0 = <&spi0_default>;
+	pinctrl-1 = <&spi0_sleep>;
 	pinctrl-names = "default", "sleep";
 
 	shifter: 595@0 {
 		compatible = "zmk,gpio-595";
 		status = "okay";
 		reg = <0>;
-		spi-max-frequency = <400000>;
+		spi-max-frequency = <200000>;
 		gpio-controller;
 		#gpio-cells = <2>;
 		ngpios = <16>; // Daisy chained so 16
@@ -286,7 +286,7 @@
 // From https://zmk.dev/docs/development/hardware-integration/pinctrl#pinctrl-node
 &pinctrl {
 	/* configuration for spi0 device, default state */
-	spi1_default: spi1_default {
+	spi0_default: spi0_default {
 		/* node name is arbitrary */
 		group1 {
 			/* main role: configure P0.01 as SPI clock, P0.02 as SPI MOSI, P0.03 as SPI MISO */
@@ -296,7 +296,7 @@
 	};
 
 	/* configuration for spi0 device, sleep state */
-	spi1_sleep: spi1_sleep {
+	spi0_sleep: spi0_sleep {
 		group1 {
 			/* main role: configure P0.01 as SPI clock, P0.02 as SPI MOSI, P0.03 as SPI MISO */
 			psels = <NRF_PSEL(SPIM_SCK, 0, 20)>,
