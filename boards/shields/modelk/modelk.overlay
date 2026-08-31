@@ -230,21 +230,21 @@
 			// https://deskthority.net/viewtopic.php?p=451764#p451764
 			col-gpios =
 				<&gpio1 6 GPIO_ACTIVE_HIGH>,
-					<&shifter 6  GPIO_ACTIVE_HIGH>,   // Col 1
-					<&shifter 5  GPIO_ACTIVE_HIGH>,   // Col 5
-					<&shifter 4  GPIO_ACTIVE_HIGH>,   // Col 4
-					<&shifter 3  GPIO_ACTIVE_HIGH>,   // Col 3
-					<&shifter 2  GPIO_ACTIVE_HIGH>,   // Col 2
-					<&shifter 1  GPIO_ACTIVE_HIGH>,   // Col 1
-					<&shifter 0  GPIO_ACTIVE_HIGH>,   // Col 0
-					<&shifter 15 GPIO_ACTIVE_HIGH>,   // Col 15
-					<&shifter 14 GPIO_ACTIVE_HIGH>,   // Col 14
-					<&shifter 13 GPIO_ACTIVE_HIGH>,   // Col 13
-					<&shifter 12 GPIO_ACTIVE_HIGH>,   // Col 12
-					<&shifter 11 GPIO_ACTIVE_HIGH>,   // Col 11
-					<&shifter 10 GPIO_ACTIVE_HIGH>,   // Col 10
-					<&shifter 9  GPIO_ACTIVE_HIGH>,   // Col 9
-					<&shifter 8  GPIO_ACTIVE_HIGH>;   // Col 8
+				<&shifter 7  GPIO_ACTIVE_HIGH>,   // Col 1
+				<&shifter 6  GPIO_ACTIVE_HIGH>,   // Col 2
+				<&shifter 5  GPIO_ACTIVE_HIGH>,   // Col 3
+				<&shifter 4  GPIO_ACTIVE_HIGH>,   // Col 4
+				<&shifter 3  GPIO_ACTIVE_HIGH>,   // Col 5
+				<&shifter 2  GPIO_ACTIVE_HIGH>,   // Col 6
+				<&shifter 1  GPIO_ACTIVE_HIGH>,   // Col 7
+				<&shifter 15 GPIO_ACTIVE_HIGH>,   // Col 8
+				<&shifter 14 GPIO_ACTIVE_HIGH>,   // Col 9
+				<&shifter 13 GPIO_ACTIVE_HIGH>,   // Col 10
+				<&shifter 12 GPIO_ACTIVE_HIGH>,   // Col 11
+				<&shifter 11 GPIO_ACTIVE_HIGH>,   // Col 12
+				<&shifter 10 GPIO_ACTIVE_HIGH>,   // Col 13
+				<&shifter 9  GPIO_ACTIVE_HIGH>,   // Col 14
+				<&shifter 8  GPIO_ACTIVE_HIGH>;   // Col 15
 	};
 
 	leds {
@@ -254,7 +254,7 @@
 			label = "Numlock LED";
 		};
 		capslock_led: capslock_led {
-			gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
+			gpios = <&shifter 7  GPIO_ACTIVE_HIGH>;
 			label = "Capslock LED";
 		};
 		bluetooth_led: bluetooth_led {
