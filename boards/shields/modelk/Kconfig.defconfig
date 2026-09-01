@@ -2,7 +2,7 @@ if SHIELD_MODELK
 
 # Name must be less than 16 characters long!
 config ZMK_KEYBOARD_NAME
-    default "modelk"
+    default "MK_BLE"
 
 config SPI
     default y
